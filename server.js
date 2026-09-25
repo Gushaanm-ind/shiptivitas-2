@@ -125,9 +125,52 @@ app.put('/api/v1/clients/:id', (req, res) => {
   let clients = db.prepare('select * from clients').all();
   const client = clients.find(client => client.id === id);
 
-  /* ---------- Update code below ----------*/
+  if (status && status !== 'backlog' && status !== 'in-progress' && status !== 'complete') {
+    return res.status(400).send({
+      'message': 'Invalid status provided.',
+      'long_message': 'Status can only be one of the following: [backlog | in-progress | complete].',
+    });
+  }
 
+  // Validate priority if provided
+  if (priority !== undefined) {
+    priority = parseInt(priority, 10);
+    const { valid, messageObj } = validatePriority(priority);
+    if (!valid) {
+      return res.status(400).send(messageObj);
+    }
+  }
 
+  const newStatus = status || client.status;
+  const newPriority = priority !== undefined ? priority : client.priority;
+
+  // Get all clients in the target swimlane (excluding the moved client)
+  const laneClients = clients
+    .filter(c => c.id !== id && c.status === newStatus)
+    .sort((a, b) => a.priority - b.priority);
+
+  // Insert client at new priority position
+  laneClients.splice(newPriority - 1, 0, { ...client, status: newStatus });
+
+  // Reassign priorities for that lane
+  laneClients.forEach((c, index) => {
+    db.prepare('update clients set status = ?, priority = ? where id = ?')
+      .run(c.status, index + 1, c.id);
+  });
+
+  // If status changed, also fix priorities in old lane
+  if (status && status !== client.status) {
+    const oldLaneClients = clients
+      .filter(c => c.id !== id && c.status === client.status)
+      .sort((a, b) => a.priority - b.priority);
+
+    oldLaneClients.forEach((c, index) => {
+      db.prepare('update clients set priority = ? where id = ?')
+        .run(index + 1, c.id);
+    });
+  }
+
+  clients = db.prepare('select * from clients').all();
 
   return res.status(200).send(clients);
 });
